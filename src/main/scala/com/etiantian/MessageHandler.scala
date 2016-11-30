@@ -4,15 +4,15 @@ import java.io.{File, FileInputStream}
 import java.text.SimpleDateFormat
 import java.util.{Date, Properties, UUID}
 
+import kafka.serializer.StringDecoder
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.hbase.HBaseConfiguration
 import org.apache.hadoop.hbase.client.Put
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable
 import org.apache.hadoop.hbase.mapreduce.TableOutputFormat
 import org.apache.hadoop.hbase.util.Bytes
 import org.apache.hadoop.mapreduce.Job
 import org.apache.log4j._
-import org.apache.spark.rdd.{PairRDDFunctions, RDD}
+import org.apache.spark.storage.StorageLevel
 import org.apache.spark.streaming.kafka.KafkaUtils
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
@@ -48,8 +48,13 @@ object MessageHandler {
     val ssc = new StreamingContext(sparkConf, Seconds(properties.getProperty("streaming.cycle").toInt))
     val sc: SparkContext = ssc.sparkContext
     val map = Map("aixueOnline" -> 1)
+    val kafkaParams = Map[String, String](
+      "zookeeper.connect" -> quorum, "group.id" -> "MessageHandler",
+      "zookeeper.connection.timeout.ms" -> "10000",
+      "auto.offset.reset" -> "largest"
+    )
 
-    val kafkaStream = KafkaUtils.createStream(ssc, quorum, "aixueMessage", map)
+    val kafkaStream = KafkaUtils.createStream[String, String, StringDecoder, StringDecoder](ssc, kafkaParams, map,StorageLevel.MEMORY_AND_DISK_SER_2)
 
     val format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
 
@@ -156,6 +161,8 @@ object MessageHandler {
       jedis.hset("aixue", "avgTime", avgTime.toString)
 
       jedis.hset("aixue", "interCount", interCount.toString)
+      jedis.expire("aixue", properties.getProperty("streaming.cycle").toInt + 1)
+      jedis.close()
 
       val conf = new Configuration()
       conf.set("hbase.zookeeper.quorum", properties.getProperty("hbase.quorum"))
@@ -178,11 +185,7 @@ object MessageHandler {
         put.addColumn(Bytes.toBytes("aixue"), Bytes.toBytes("interCount"), Bytes.toBytes(tuple._6.toString))
         (new ImmutableBytesWritable, put)
       }).saveAsNewAPIHadoopDataset(job.getConfiguration)
-
-      jedis.expire("aixue", properties.getProperty("streaming.cycle").toInt + 1)
-      jedis.close()
     })
-
 
     ssc.start()
     ssc.awaitTermination()
